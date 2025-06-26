@@ -1,0 +1,13 @@
+[package]
+name = "silva"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "An atomic arena-backed tree"
+keywords = ["tree", "atomic"]
+categories = ["data-structures"]
+repository = "https"
+
+[dependencies]
+
+[features]
