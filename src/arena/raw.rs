@@ -27,7 +27,7 @@ pub struct Arena<T> {
     count: AtomicUsize,
 }
 
-unsafe impl<T: Send> Send for Arena<T> {}
+unsafe impl<T: Send + Sync> Send for Arena<T> {}
 unsafe impl<T: Send + Sync> Sync for Arena<T> {}
 
 impl<T> Drop for Arena<T> {
@@ -105,7 +105,7 @@ impl<T> Arena<T> {
         let node = unsafe {
             self.bucket_at(loc)
                 .acquire(loc)
-                .write(Node::new(index, parent, value), parent)
+                .write(Node::new(index, parent.map(Node::index), value), parent)
         };
         self.count.fetch_add(1, Relaxed);
 

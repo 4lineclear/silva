@@ -3,39 +3,6 @@ use std::thread;
 
 use silva::Arena;
 
-macro_rules! assert_ptr_eq {
-    ($left:expr, $right:expr $(,)?) => {
-        assert_eq!(
-            $left.as_ptr(),
-            $right.as_ptr()
-        );
-    };
-
-    ($left:expr, $right:expr, $($arg:tt)+) => {
-        assert_eq!(
-            $left.as_ptr(),
-            $right.as_ptr(),
-            $($arg)+
-        );
-    };
-}
-
-trait AsPtr<T> {
-    fn as_ptr(&self) -> *const T;
-}
-
-impl<T> AsPtr<T> for &T {
-    fn as_ptr(&self) -> *const T {
-        *self as *const _
-    }
-}
-
-impl<T> AsPtr<T> for Option<&T> {
-    fn as_ptr(&self) -> *const T {
-        self.map_or(std::ptr::null(), std::ptr::from_ref)
-    }
-}
-
 #[test]
 fn simple() {
     let arena = Arc::new(Arena::new());
@@ -49,11 +16,11 @@ fn simple() {
     assert_eq!(b.value, "two");
     assert_eq!(arena[c].value, "three");
 
-    assert_ptr_eq!(a.parent(), Some(root));
-    assert_ptr_eq!(b.parent(), Some(root));
-    assert_ptr_eq!(arena[c].parent(), Some(root));
+    assert_eq!(a.parent(), Some(root.index()));
+    assert_eq!(b.parent(), Some(root.index()));
+    assert_eq!(arena[c].parent(), Some(root.index()));
 
-    let mut children = root.children();
+    let mut children = root.children(&arena);
     assert_eq!(children.next().unwrap().index(), c);
     assert_eq!(children.next().unwrap().index(), b.index());
     assert_eq!(children.next().unwrap().index(), a.index());
@@ -174,15 +141,15 @@ fn tree_macro() {
     assert_eq!(root.value, "root");
 
     let names = ["one", "two", "three", "four", "five"];
-    for (child, name) in root.children().zip(names.into_iter().rev()) {
+    for (child, name) in root.children(&arena).zip(names.into_iter().rev()) {
         assert_eq!(name, child.value);
     }
 
-    assert_ptr_eq!(root2.child(), Some(one));
+    assert_eq!(root2.child(), Some(one.index()));
     assert_eq!(root2.value, "root2");
     assert_eq!(one.value, "one");
 
-    for (child, name) in one.children().zip(names[1..].into_iter().rev()) {
+    for (child, name) in one.children(&arena).zip(names[1..].into_iter().rev()) {
         assert_eq!(*name, child.value);
     }
 }
@@ -199,9 +166,9 @@ fn iter() {
     let mut i = 0;
     let n = [a, b, c];
 
-    for child in root.children() {
+    for child in root.children(&arena) {
         assert_eq!(child.value, i);
-        assert_ptr_eq!(n[i], child);
+        assert_eq!(n[i].index(), child.index());
         i += 1;
     }
 }
@@ -257,7 +224,7 @@ fn deeply_nested() {
     for i in 0..indices.len() {
         assert_eq!(arena[indices[i]].value, i);
         assert_eq!(nodes[i].value, i);
-        assert_ptr_eq!(&nodes[i], &arena[indices[i]]);
+        assert_eq!(nodes[i].index(), arena[indices[i]].index());
     }
 }
 

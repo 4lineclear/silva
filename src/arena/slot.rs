@@ -2,7 +2,7 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::AtomicU8;
-use std::sync::atomic::Ordering::{AcqRel, Acquire, Release};
+use std::sync::atomic::Ordering::{Acquire, Release};
 
 use crate::Node;
 
@@ -78,11 +78,7 @@ impl<T> Slot<T> {
     unsafe fn write_node(&self, node: Node<T>, parent: &Node<T>) -> &Node<T> {
         // SAFETY: upheld by caller
         let node = unsafe { (*self.slot.get()).write(node) };
-        let _ = parent.child.fetch_update(AcqRel, Acquire, |value| {
-            node.next = ptr::NonNull::new(value);
-            Some(ptr::from_mut(node))
-        });
-
+        parent.child.add_child(node);
         node
     }
 

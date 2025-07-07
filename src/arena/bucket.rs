@@ -9,7 +9,7 @@ pub struct Bucket<T> {
     entries: OnceLock<NonNull<T>>,
 }
 
-unsafe impl<T: Send> Send for Bucket<T> {}
+unsafe impl<T: Send + Sync> Send for Bucket<T> {}
 unsafe impl<T: Send + Sync> Sync for Bucket<T> {}
 
 impl<T> Bucket<T> {

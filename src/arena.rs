@@ -77,7 +77,6 @@ impl<T> Arena<T> {
     /// The bucket and slot at `index` must be initialized.
     /// This can safely be done as long as [`Index`] is known to come from
     /// this exact arena.
-    #[expect(unused)]
     pub(crate) unsafe fn get_unchecked(&self, index: Index) -> &Node<T> {
         unsafe { self.raw.get_unchecked(index) }
     }
