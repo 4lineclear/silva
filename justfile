@@ -1,3 +1,10 @@
+test *ARGS:
+    cargo test {{ARGS}}
+
+miri *ARGS:
+    MIRIFLAGS="-Zmiri-disable-stacked-borrows " \
+        cargo +nightly miri test {{ARGS}}
+
 bench *ARGS:
     cargo bench {{ARGS}}
 
@@ -8,6 +15,7 @@ perf-core:
     cargo build -r && \
     perf record --call-graph dwarf \
         ./target/release/silva
+
 time-core:
     cargo build -r && \
     /usr/bin/time -v \

@@ -1,4 +1,4 @@
-//! an underlying arena
+//! the arena's implementation
 //!
 //! # Implementation
 //!
@@ -8,21 +8,22 @@
 //! [slotmap-boxcar]: https://github.com/SabrinaJewson/boxcar.rs
 //! [sharded-slab]: https://github.com/hawkw/sharded-slab
 
-use crate::node::{Handle, Node};
+use crate::{AsParent, Handle, Index, Node};
 
-use std::fmt::Display;
-use std::num::NonZero;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Acquire;
 
+// NOTE: should move bucket & slot to be submodules of raw
+
+mod bucket;
 mod raw;
 mod slot;
 
-/// The underlying arena.
-///
-/// This structure holds trees & their nodes, providing multithreaded access to them
-/// when using an [`Index`].
+// export just for Index
+pub use raw::MAX_INDEX;
+
+// TODO: create way to allocate many siblings at once
+
+/// The arena where [`Node`]s are stored
 pub struct Arena<T> {
     raw: raw::Arena<T>,
 }
@@ -38,7 +39,7 @@ impl<T> std::ops::Index<Index> for Arena<T> {
 
     #[inline]
     fn index(&self, index: Index) -> &Self::Output {
-        &self.raw[index]
+        self.get(index).expect("index is uninitialized")
     }
 }
 
@@ -69,6 +70,18 @@ impl<T> Arena<T> {
         self.raw.get(index)
     }
 
+    /// Get the node at `index` without checking
+    ///
+    /// # Safety
+    ///
+    /// The bucket and slot at `index` must be initialized.
+    /// This can safely be done as long as [`Index`] is known to come from
+    /// this exact arena.
+    #[expect(unused)]
+    pub(crate) unsafe fn get_unchecked(&self, index: Index) -> &Node<T> {
+        unsafe { self.raw.get_unchecked(index) }
+    }
+
     /// Get a handle for the node of the given [`Index`]
     pub fn get_handle(self: &Arc<Self>, index: Index) -> Option<Handle<T>> {
         // SAFETY: node is obtained from correct arena
@@ -76,44 +89,28 @@ impl<T> Arena<T> {
     }
 
     /// Add a new node
-    pub fn push(&self, parent: Option<&Node<T>>, value: T) -> &Node<T> {
-        self.raw.push_with(parent, |_| value)
+    pub fn push(&self, parent: impl AsParent<T>, value: T) -> &Node<T> {
+        self.raw.push_with(parent.get(self), |_| value)
     }
 
     /// Add a new node using the given function
-    pub fn push_with(&self, parent: Option<&Node<T>>, f: impl FnOnce(Index) -> T) -> &Node<T> {
-        self.raw.push_with(parent, f)
+    pub fn push_with(&self, parent: impl AsParent<T>, f: impl FnOnce(Index) -> T) -> &Node<T> {
+        self.raw.push_with(parent.get(self), f)
     }
 
-    /// Add a new node to an existing one
-    pub fn handle(self: &Arc<Self>, parent: Option<&Node<T>>, value: T) -> Handle<T> {
+    /// Get a handle to an index
+    ///
+    /// # Panics
+    ///
+    /// Panics if the index does not exist within this arena
+    pub fn handle(self: &Arc<Self>, index: impl Into<Index>) -> Handle<T> {
         // SAFETY: node is obtained from correct arena
-        unsafe { Handle::new(self.raw.push_with(parent, |_| value), self) }
+        unsafe { Handle::new(&self[index.into()], self) }
     }
 
-    /// Add a new node to an existing one using the given function
-    pub fn handle_with(
-        self: &Arc<Self>,
-        parent: Option<&Node<T>>,
-        f: impl FnOnce(Index) -> T,
-    ) -> Handle<T> {
-        // SAFETY: node is obtained from correct arena
-        unsafe { Handle::new(self.raw.push_with(parent, f), self) }
-    }
-
-    /// Get the node at [`Node::parent`]
-    pub fn parent(&self, node: &Node<T>) -> Option<&Node<T>> {
-        self.get(node.parent()?)
-    }
-
-    /// Get the node at [`Node::child`]
-    pub fn child(&self, node: &Node<T>) -> Option<&Node<T>> {
-        self.get(node.child()?)
-    }
-
-    /// Get the node at [`Node::next`]
-    pub fn next(&self, node: &Node<T>) -> Option<&Node<T>> {
-        self.get(node.next()?)
+    /// returns `true` if the given node belongs to this arena
+    pub fn contains(&self, node: &Node<T>) -> bool {
+        self.raw.contains(node)
     }
 
     /// Get the number of available nodes
@@ -122,70 +119,9 @@ impl<T> Arena<T> {
     }
 
     /// Get the number of available slots
+    ///
+    /// `capacity` + `SLOTS`([`usize::BITS`]) should always be a power of two.
     pub fn capacity(&self) -> usize {
         self.raw.capacity()
-    }
-}
-
-/// A valid index into an arena
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Index(NonZero<usize>);
-
-impl std::fmt::Debug for Index {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Index").field(&self.get()).finish()
-    }
-}
-
-impl Display for Index {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.get().fmt(f)
-    }
-}
-
-impl Index {
-    /// creates new index
-    ///
-    /// # Safety
-    ///
-    /// index must be less than or equal to `MAX_INDEX`
-    const unsafe fn new_unchecked(index: usize) -> Self {
-        debug_assert!(index <= raw::MAX_INDEX);
-        Self(unsafe { NonZero::new_unchecked(index + 1) })
-    }
-
-    /// returns the index this arena is stored at
-    pub(crate) const fn get(self) -> usize {
-        self.0.get() - 1
-    }
-}
-
-/// An optional atomic [`Index`]
-pub struct AtomicIndex(AtomicUsize);
-
-impl std::fmt::Debug for AtomicIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.get().fmt(f)
-    }
-}
-
-impl AtomicIndex {
-    pub fn get(&self) -> Option<Index> {
-        NonZero::new(self.0.load(Acquire)).map(Index)
-    }
-
-    pub(crate) const fn new(index: Index) -> Self {
-        Self(AtomicUsize::new(index.0.get()))
-    }
-
-    pub(crate) const fn opt(index: Option<Index>) -> Self {
-        match index {
-            Some(t) => Self::new(t),
-            None => Self::none(),
-        }
-    }
-
-    pub(crate) const fn none() -> Self {
-        Self(AtomicUsize::new(0))
     }
 }

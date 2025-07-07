@@ -6,7 +6,7 @@ license = "MIT"
 description = "An atomic arena-backed tree"
 keywords = ["tree", "atomic"]
 categories = ["data-structures"]
-repository = "https"
+repository = "https://github.com/4lineclear/silva"
 
 [dependencies]
 

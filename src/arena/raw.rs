@@ -1,52 +1,44 @@
 use std::ptr;
-use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
-use crate::node::Node;
+use crate::Index;
+use crate::Node;
 
-use super::Index;
-use super::slot::Chunk;
+use super::bucket::Bucket;
+use super::slot::Slot;
 
-/// The total number of slots
-pub const SLOTS: usize = (usize::BITS / 2) as usize;
+/// The base for `slot_cap`
+pub const SLOTS: usize = usize::BITS as usize;
 /// The number of skipped slots
 pub const ZERO_SLOT: usize = SLOTS - 1;
 /// The number of skipped buckets
-pub const ZERO_BUCKET: usize = (usize::BITS - ZERO_SLOT.leading_zeros()) as usize;
+pub const ZERO_BUCKET: usize = SLOTS - ZERO_SLOT.leading_zeros() as usize;
 /// The number of buckets to be used
-pub const BUCKETS: usize = usize::BITS as usize - 1 - ZERO_BUCKET;
+pub const BUCKETS: usize = SLOTS - 1 - ZERO_BUCKET;
 /// The inclusive max index(slot) able to be stored
-pub const MAX_INDEX: usize = isize::MAX as usize - ZERO_SLOT - 1;
+pub const MAX_INDEX: usize = isize::MAX as usize - SLOTS;
+
+// NOTE: can make drop much faster if we use the Arena's properties.
 
 pub struct Arena<T> {
-    buckets: [AtomicPtr<Chunk<T>>; BUCKETS],
+    buckets: [Bucket<Slot<T>>; BUCKETS],
     index: AtomicUsize,
     count: AtomicUsize,
 }
 
-// TODO: consider lowering requirements here
-unsafe impl<T: Send + Sync> Send for Arena<T> {}
+unsafe impl<T: Send> Send for Arena<T> {}
 unsafe impl<T: Send + Sync> Sync for Arena<T> {}
-
-impl<T> std::ops::Index<Index> for Arena<T> {
-    type Output = Node<T>;
-
-    #[inline]
-    fn index(&self, index: Index) -> &Self::Output {
-        self.get(index).expect("index is uninitialized")
-    }
-}
 
 impl<T> Drop for Arena<T> {
     fn drop(&mut self) {
+        // let mut count = *self.count.get_mut();
         for (i, bucket) in self.buckets.iter_mut().enumerate() {
-            let chunks = *bucket.get_mut();
-            if !chunks.is_null() {
-                let len = Location::chunk_cap(i);
-                unsafe { Chunk::dealloc(chunks, len) };
-            }
+            // SAFETY: buckets are trusted to be allocated correctly
+            unsafe { bucket.try_dealloc(i) };
+            // count -= Location::capacity(i);
         }
+        // assert_eq!(count, 0);
     }
 }
 
@@ -57,27 +49,35 @@ impl<T> Default for Arena<T> {
 }
 
 impl<T> Arena<T> {
-    pub fn count(&self) -> usize {
-        self.count.load(Relaxed)
-    }
+    #[expect(clippy::declare_interior_mutable_const)]
+    const ARENA: Self = Self {
+        buckets: [const { Bucket::new() }; BUCKETS],
+        index: AtomicUsize::new(0),
+        count: AtomicUsize::new(0),
+    };
 
-    /// Construct a new, empty, `Buckets`.
+    /// Construct a new, empty, arena
     pub const fn new() -> Self {
-        Self {
-            buckets: [const { AtomicPtr::new(ptr::null_mut()) }; BUCKETS],
-            index: AtomicUsize::new(0),
-            count: AtomicUsize::new(0),
-        }
+        Self::ARENA
     }
 
-    pub fn get(&self, index: Index) -> Option<&Node<T>> {
+    /// Get a node at index without checking
+    ///
+    /// # Safety
+    ///
+    /// The slot and bucket at [`Index`] must be correctly initialized.
+    /// This can be guarenteed if the given [`Index`] came from this exact arena.
+    pub unsafe fn get_unchecked(&self, index: Index) -> &Node<T> {
+        // SAFETY: upheld by caller
         let loc = Location::new(index);
-        unsafe { (*self.get_chunk(loc)?).get(loc.slot) }
+        unsafe { self.bucket_at(loc).get_unchecked(loc.entry).get_unchecked() }
     }
 
-    fn get_chunk(&self, loc: Location) -> Option<&Chunk<T>> {
-        let bucket = unsafe { self.buckets.get_unchecked(loc.bucket) }.load(Acquire);
-        (!bucket.is_null()).then(|| unsafe { &*bucket.add(loc.chunk) })
+    /// Get a node at index
+    pub fn get(&self, index: Index) -> Option<&Node<T>> {
+        // SAFETY: slot is checked
+        let loc = Location::new(index);
+        unsafe { self.bucket_at(loc).get(loc.entry) }?.get()
     }
 
     /// Returns a unique index for insertion.
@@ -92,38 +92,34 @@ impl<T> Arena<T> {
     }
 
     pub fn push_with(&self, parent: Option<&Node<T>>, f: impl FnOnce(Index) -> T) -> &Node<T> {
+        debug_assert!(
+            parent.is_none_or(|p| self.contains(p)),
+            "node from other arena inputted"
+        );
+
         let index = self.next_index();
         let loc = Location::new(index);
+        let value = f(index);
 
-        let node = Node::new(index, parent.map(Node::index), f(index));
-        let node = if let Some(parent) = parent {
-            unsafe { (*self.chunk(loc)).write(loc.slot, node, index, parent) }
-        } else {
-            unsafe { (*self.chunk(loc)).write_root(loc.slot, node) }
+        // SAFETY: index is unique
+        let node = unsafe {
+            self.bucket_at(loc)
+                .acquire(loc)
+                .write(Node::new(index, parent, value), parent)
         };
-
         self.count.fetch_add(1, Relaxed);
+
         node
     }
 
-    unsafe fn chunk(&self, loc: Location) -> &Chunk<T> {
-        let bucket = unsafe { self.buckets.get_unchecked(loc.bucket) };
-        let mut chunks = bucket.load(Acquire);
-
-        if chunks.is_null() {
-            let len = Location::chunk_cap(loc.bucket);
-            chunks = unsafe { Chunk::alloc_bucket(bucket, len) };
-        }
-        unsafe { &*chunks.add(loc.chunk) }
-    }
-
     pub fn with_capacity(capacity: usize) -> Self {
-        let loc = Location::new(unsafe { Index::new_unchecked(capacity.min(MAX_INDEX)) });
+        // SAFETY: capacity is bounded to MIN_INDEX
+        let loc = unsafe { Location::new_unchecked(capacity.min(MAX_INDEX)) };
 
         let mut arena = Self::new();
         for (i, bucket) in arena.buckets[..=loc.bucket].iter_mut().enumerate() {
-            let len = Location::chunk_cap(i);
-            *bucket = AtomicPtr::new(unsafe { Chunk::alloc_bucket(bucket, len) });
+            // SAFETY: bucket is uninit, capacity is based on i, which is correct
+            unsafe { bucket.overwrite(Location::capacity(i)) };
         }
         arena
     }
@@ -135,16 +131,10 @@ impl<T> Arena<T> {
             .saturating_add(additional)
             .min(MAX_INDEX);
         // SAFETY: index checked above
-        let index = unsafe { Index::new_unchecked(index) };
-        let mut loc = Location::new(index);
-        loop {
-            let bucket = unsafe { self.buckets.get_unchecked(loc.bucket) };
-            let chunks = bucket.load(Acquire);
-            if !chunks.is_null() {
-                break;
-            }
-            let len = Location::chunk_cap(loc.bucket);
-            unsafe { Chunk::alloc_bucket(bucket, len) };
+        let mut loc = unsafe { Location::new_unchecked(index) };
+        while !self.bucket_at(loc).is_alloc() {
+            // SAFETY: same index used = same bucket
+            unsafe { self.bucket_at(loc).reserve(loc.bucket) };
             if loc.bucket == 0 {
                 break;
             }
@@ -152,14 +142,29 @@ impl<T> Arena<T> {
         }
     }
 
+    // NOTE: change this to use index instead
     pub fn capacity(&self) -> usize {
         let mut total = 0;
         for bucket in 0..BUCKETS {
-            if !self.buckets[bucket].load(Relaxed).is_null() {
-                total += Location::slot_cap(bucket);
+            if self.buckets[bucket].is_alloc() {
+                total += Location::capacity(bucket);
             }
         }
         total
+    }
+
+    pub fn contains(&self, node: &Node<T>) -> bool {
+        self.get(node.index())
+            .is_some_and(|found| ptr::eq(found, node))
+    }
+
+    pub fn count(&self) -> usize {
+        self.count.load(Relaxed)
+    }
+
+    fn bucket_at(&self, Location { bucket, .. }: Location) -> &Bucket<Slot<T>> {
+        // SAFETY: Location.bucket is always within bounds
+        unsafe { self.buckets.get_unchecked(bucket) }
     }
 }
 
@@ -167,98 +172,95 @@ impl<T> Arena<T> {
 #[derive(Debug, Clone, Copy)]
 pub struct Location {
     /// the bucket
-    bucket: usize,
-    /// the specific chunk within the bucket
-    chunk: usize,
-    /// the specific slot within the chunk
-    slot: usize,
+    pub bucket: usize,
+    /// a slot within the bucket
+    pub entry: usize,
 }
 
 impl Location {
+    /// Create a new location without checking
+    ///
+    /// # Safety
+    ///
+    /// `index` <= [`MAX_INDEX`]
     #[inline]
-    pub const fn new(index: Index) -> Self {
-        let index = index.get() + ZERO_SLOT;
-        let bucket = BUCKETS - (index + 1).leading_zeros() as usize;
-        let entry = index - (Self::slot_cap(bucket) - 1);
-        Self {
-            bucket,
-            chunk: entry / SLOTS,
-            slot: entry % SLOTS,
-        }
+    pub const unsafe fn new_unchecked(index: usize) -> Self {
+        debug_assert!(index <= MAX_INDEX);
+        let index = index + ZERO_SLOT;
+        let bucket = Self::bucket(index);
+        let entry = index - (Self::capacity(bucket) - 1);
+        Self { bucket, entry }
     }
 
-    /// The number of chunks in the given bucket
     #[inline]
-    pub const fn chunk_cap(bucket: usize) -> usize {
-        1 << bucket
+    pub const fn new(index: Index) -> Self {
+        // SAFETY: Index is always <= MAX_INDEX
+        unsafe { Self::new_unchecked(index.get()) }
+    }
+
+    /// The bucket `index` - [`ZERO_SLOT`] belongs to
+    #[inline]
+    pub const fn bucket(index: usize) -> usize {
+        BUCKETS - (index + 1).leading_zeros() as usize
     }
 
     /// The number of slots in the given bucket
     #[inline]
-    pub const fn slot_cap(bucket: usize) -> usize {
+    pub const fn capacity(bucket: usize) -> usize {
         1 << (bucket + ZERO_BUCKET)
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
 
-    impl Location {
-        fn from_usize(index: usize) -> Self {
+    impl From<usize> for Location {
+        fn from(index: usize) -> Self {
             assert!(index <= MAX_INDEX, "index out of bounds");
+            // SAFETY: index checked abvoe
             Location::new(unsafe { Index::new_unchecked(index) })
         }
     }
 
     #[test]
     fn location() {
-        assert_eq!(Location::chunk_cap(0), 1);
+        assert_eq!(Location::capacity(0), SLOTS);
 
         for i in 0..SLOTS {
-            let loc = Location::from_usize(i);
+            let loc = Location::from(i);
             assert_eq!(loc.bucket, 0);
-            assert_eq!(loc.chunk, i / SLOTS);
-            assert_eq!(loc.slot, i);
+            assert_eq!(loc.entry, i);
         }
 
-        assert_eq!(Location::chunk_cap(1), 2);
+        assert_eq!(Location::capacity(1), SLOTS * 2);
 
         for i in SLOTS..SLOTS * 3 {
-            let loc = Location::from_usize(i);
+            let loc = Location::from(i);
             assert_eq!(loc.bucket, 1);
-            assert_eq!(loc.chunk, (i - SLOTS) / SLOTS);
-            assert_eq!(loc.slot, i % SLOTS);
+            assert_eq!(loc.entry, i - SLOTS);
         }
 
-        assert_eq!(Location::chunk_cap(2), 4);
+        assert_eq!(Location::capacity(2), SLOTS * 4);
 
         for i in SLOTS * 3..SLOTS * 7 {
-            let loc = Location::from_usize(i);
+            let loc = Location::from(i);
             assert_eq!(loc.bucket, 2);
-            assert_eq!(loc.chunk, (i - SLOTS * 3) / SLOTS);
-            assert_eq!(loc.slot, i % SLOTS);
+            assert_eq!(loc.entry, i - SLOTS * 3);
         }
     }
 
     #[test]
     fn max_entries() {
-        /// the number of chunks for the biggest bucket
-        pub const MAX_CHUNK: usize = isize::MAX as usize / usize::BITS as usize;
-
-        let mut chunks = 0;
         let mut slots = 0;
         for i in 0..BUCKETS {
-            slots += Location::slot_cap(i);
-            chunks += Location::chunk_cap(i);
+            slots += Location::capacity(i);
         }
-        assert_eq!(slots, MAX_INDEX + 1);
-        assert_eq!(chunks, MAX_CHUNK * 2 + 1);
 
-        let max = Location::from_usize(MAX_INDEX);
+        assert_eq!(slots, MAX_INDEX + 1);
+
+        let max = Location::from(MAX_INDEX);
         assert_eq!(max.bucket, BUCKETS - 1);
-        assert_eq!(Location::chunk_cap(max.bucket), MAX_CHUNK + 1);
-        assert_eq!(max.chunk, MAX_CHUNK);
-        assert_eq!(max.slot, SLOTS - 1);
+        assert_eq!(max.entry, (1 << (usize::BITS - 2)) - 1);
     }
 }
