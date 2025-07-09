@@ -1,10 +1,11 @@
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
-use std::ptr;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::{Acquire, Release};
 
 use crate::Node;
+
+// NOTE: uninit should be moved to node.value
 
 pub struct Slot<T> {
     state: AtomicU8,
@@ -15,9 +16,7 @@ impl<T> Drop for Slot<T> {
     fn drop(&mut self) {
         if matches!(self.state_mut(), State::Active) {
             // SAFETY: slot is confirmed to be init
-            unsafe {
-                ptr::drop_in_place(self.slot.get_mut().as_mut_ptr());
-            }
+            unsafe { self.slot.get_mut().assume_init_drop() };
         }
     }
 }
@@ -49,14 +48,17 @@ impl<T> Slot<T> {
         self.state.store(State::Middle as u8, Release);
 
         // SAFETY: upheld by caller
-        let node = if let Some(parent) = parent {
-            unsafe { self.write_node(node, parent) }
-        } else {
-            unsafe { self.write_root(node) }
-        };
+        let node = unsafe { self.write_raw(node) };
+        if let Some(parent) = parent {
+            parent.child.add_child(node);
+        }
 
         self.state.store(State::Active as u8, Release);
-        node
+        // SAFETY: has been init above
+        // NOTE: returning a mutable node ref here causes miri to read a
+        // violation of stacked borrow rules. This circumvents the error
+        // but might still be UB?
+        unsafe { self.get_unchecked() }
     }
 
     /// write node to slot
@@ -64,22 +66,9 @@ impl<T> Slot<T> {
     /// # Safety
     ///
     /// The slot must be uninitialized
-    unsafe fn write_root(&self, node: Node<T>) -> &Node<T> {
+    unsafe fn write_raw(&self, node: Node<T>) -> &mut Node<T> {
         // SAFETY: upheld by caller
         unsafe { (*self.slot.get()).write(node) }
-    }
-
-    /// write node to slot
-    ///
-    /// # Safety
-    ///
-    /// The slot must be uninitialized, parent & node should end up in the same arena
-    #[inline(never)]
-    unsafe fn write_node(&self, node: Node<T>, parent: &Node<T>) -> &Node<T> {
-        // SAFETY: upheld by caller
-        let node = unsafe { (*self.slot.get()).write(node) };
-        parent.child.add_child(node);
-        node
     }
 
     fn acquire(&self) -> bool {
@@ -94,6 +83,7 @@ impl<T> Slot<T> {
     fn spin(&self) -> bool {
         // maybe should use exponential backoff
         loop {
+            // could use a relaxed ordering here, confirming with
             match self.state() {
                 State::Uninit => break false,
                 State::Middle => std::hint::spin_loop(),

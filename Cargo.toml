@@ -8,6 +8,3 @@ keywords = ["tree", "atomic"]
 categories = ["data-structures"]
 repository = "https://github.com/4lineclear/silva"
 
-[dependencies]
-
-[features]

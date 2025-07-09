@@ -27,6 +27,7 @@ pub struct Arena<T> {
     count: AtomicUsize,
 }
 
+#[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T: Send + Sync> Send for Arena<T> {}
 unsafe impl<T: Send + Sync> Sync for Arena<T> {}
 
@@ -92,11 +93,6 @@ impl<T> Arena<T> {
     }
 
     pub fn push_with(&self, parent: Option<&Node<T>>, f: impl FnOnce(Index) -> T) -> &Node<T> {
-        debug_assert!(
-            parent.is_none_or(|p| self.contains(p)),
-            "node from other arena inputted"
-        );
-
         let index = self.next_index();
         let loc = Location::new(index);
         let value = f(index);

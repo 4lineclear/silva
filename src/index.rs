@@ -77,38 +77,27 @@ impl AtomicIndex {
 /// - [`Option<Index>`]
 /// - [`Index`]
 /// - [`Node<T>`]
-///
-/// # Panics
-///
-/// Both [`Node`] and [`Index`] index into the given arena, and both will panic
-/// if the arena does not contain them. This is to uphold the rule that nodes
-/// can only be connected within the same arena.
-pub trait AsParent<T>: as_parent::Sealed {
-    /// Optionally an index
-    fn get(self, arena: &Arena<T>) -> Option<&Node<T>>;
+pub trait AsParent<'a, T>: as_parent::Sealed {
+    /// Optionally get an index
+    fn get(self, arena: &'a Arena<T>) -> Option<&'a Node<T>>;
 }
 
-impl<T> AsParent<T> for Index {
+impl<T> AsParent<'_, T> for Index {
     fn get(self, arena: &Arena<T>) -> Option<&Node<T>> {
         Some(&arena[self])
     }
 }
 
-impl<T> AsParent<T> for Option<Index> {
+impl<T> AsParent<'_, T> for Option<Index> {
     fn get(self, arena: &Arena<T>) -> Option<&Node<T>> {
         Some(&arena[self?])
     }
 }
 
-impl<T> AsParent<T> for &Node<T> {
-    fn get(self, arena: &Arena<T>) -> Option<&Node<T>> {
-        if let Some(node) = arena.get(self.index())
-            && std::ptr::eq(node, self)
-        {
-            Some(node)
-        } else {
-            panic!("node from foreign arena inputted");
-        }
+impl<'a, T> AsParent<'a, T> for &'a Node<T> {
+    fn get(self, arena: &'a Arena<T>) -> Option<&'a Node<T>> {
+        assert!(arena.contains(self));
+        Some(self)
     }
 }
 

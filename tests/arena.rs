@@ -9,7 +9,7 @@ fn simple() {
     let root = arena.push(None, "root");
 
     let a = arena.push(root, "one");
-    let b = arena.handle(arena.push(root, "two"));
+    let b = Arena::handle(&arena, arena.push(root, "two"));
     let c = arena.push(root, "three").index();
 
     assert_eq!(a.value, "one");
@@ -154,6 +154,8 @@ fn tree_macro() {
     }
 }
 
+// TODO: create a mixed-access test
+
 #[test]
 fn iter() {
     let arena = Arena::new();
@@ -162,7 +164,10 @@ fn iter() {
     let b = arena.push(root, 1);
     let a = arena.push(root, 0);
 
-    arena.push(c, 3);
+    arena.push(c, 5);
+    arena.push(b, 4);
+    arena.push(a, 3);
+
     let mut i = 0;
     let n = [a, b, c];
 

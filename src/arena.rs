@@ -88,12 +88,16 @@ impl<T> Arena<T> {
     }
 
     /// Add a new node
-    pub fn push(&self, parent: impl AsParent<T>, value: T) -> &Node<T> {
+    pub fn push<'a>(&'a self, parent: impl AsParent<'a, T>, value: T) -> &'a Node<T> {
         self.raw.push_with(parent.get(self), |_| value)
     }
 
     /// Add a new node using the given function
-    pub fn push_with(&self, parent: impl AsParent<T>, f: impl FnOnce(Index) -> T) -> &Node<T> {
+    pub fn push_with<'a>(
+        &'a self,
+        parent: impl AsParent<'a, T>,
+        f: impl FnOnce(Index) -> T,
+    ) -> &'a Node<T> {
         self.raw.push_with(parent.get(self), f)
     }
 
