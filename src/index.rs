@@ -1,7 +1,5 @@
 use std::fmt::Display;
 use std::num::NonZero;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::{AcqRel, Acquire};
 
 use crate::{Arena, Node};
 
@@ -38,38 +36,6 @@ impl Index {
     }
 }
 
-/// An optional atomic [`Index`]
-pub struct AtomicIndex(AtomicUsize);
-
-impl std::fmt::Debug for AtomicIndex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.get().fmt(f)
-    }
-}
-
-impl AtomicIndex {
-    pub fn get(&self) -> Option<Index> {
-        NonZero::new(self.0.load(Acquire)).map(Index)
-    }
-
-    pub(crate) const fn none() -> Self {
-        Self(AtomicUsize::new(0))
-    }
-
-    pub(crate) fn add_child<T>(&self, child: &mut Node<T>) {
-        let new = child.index().0.get();
-        let mut prev = self.0.load(Acquire);
-        loop {
-            child.next = NonZero::new(prev).map(Index);
-
-            match self.0.compare_exchange_weak(prev, new, AcqRel, Acquire) {
-                Err(next_prev) => prev = next_prev,
-                Ok(_) => break,
-            }
-        }
-    }
-}
-
 /// A structure you can optionally get a node's index from
 ///
 /// This can be one of:
@@ -97,7 +63,7 @@ impl<T> AsParent<'_, T> for Option<Index> {
 impl<'a, T> AsParent<'a, T> for &'a Node<T> {
     fn get(self, arena: &'a Arena<T>) -> Option<&'a Node<T>> {
         assert!(arena.contains(self));
-        Some(self)
+        Some(&arena[self.index()])
     }
 }
 

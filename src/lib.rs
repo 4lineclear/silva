@@ -20,8 +20,6 @@ pub use arena::Arena;
 pub use index::{AsParent, Index};
 pub use node::*;
 
-pub(crate) use index::AtomicIndex;
-
 // TODO: move back to mainly using indexes again.
 
 // /// example for calling cargo-asm

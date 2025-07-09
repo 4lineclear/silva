@@ -3,24 +3,57 @@ use std::thread;
 
 use silva::Arena;
 
+macro_rules! assert_ptr_eq {
+    ($left:expr, $right:expr $(,)?) => {
+        assert_eq!(
+            $left.as_ptr(),
+            $right.as_ptr()
+        );
+    };
+
+    ($left:expr, $right:expr, $($arg:tt)+) => {
+        assert_eq!(
+            $left.as_ptr(),
+            $right.as_ptr(),
+            $($arg)+
+        );
+    };
+}
+
+trait AsPtr<T> {
+    fn as_ptr(&self) -> *const T;
+}
+
+impl<T> AsPtr<T> for &T {
+    fn as_ptr(&self) -> *const T {
+        *self as *const _
+    }
+}
+
+impl<T> AsPtr<T> for Option<&T> {
+    fn as_ptr(&self) -> *const T {
+        self.map_or(std::ptr::null(), std::ptr::from_ref)
+    }
+}
+
 #[test]
 fn simple() {
     let arena = Arc::new(Arena::new());
     let root = arena.push(None, "root");
 
     let a = arena.push(root, "one");
-    let b = Arena::handle(&arena, arena.push(root, "two"));
+    let b = arena.handle(arena.push(root, "two"));
     let c = arena.push(root, "three").index();
 
     assert_eq!(a.value, "one");
     assert_eq!(b.value, "two");
     assert_eq!(arena[c].value, "three");
 
-    assert_eq!(a.parent(), Some(root.index()));
-    assert_eq!(b.parent(), Some(root.index()));
-    assert_eq!(arena[c].parent(), Some(root.index()));
+    assert_ptr_eq!(a.parent(), Some(root));
+    assert_ptr_eq!(b.parent(), Some(root));
+    assert_ptr_eq!(arena[c].parent(), Some(root));
 
-    let mut children = root.children(&arena);
+    let mut children = root.children();
     assert_eq!(children.next().unwrap().index(), c);
     assert_eq!(children.next().unwrap().index(), b.index());
     assert_eq!(children.next().unwrap().index(), a.index());
@@ -56,7 +89,7 @@ fn stress() {
     let step = total / n;
 
     let arena = Arena::new();
-    let root = arena.push(None, 0);
+    let root = arena.push(None, 0).index();
 
     let barrier = std::sync::Barrier::new(n);
     thread::scope(|s| {
@@ -95,7 +128,7 @@ fn mt_read_write() {
             let tx = tx.clone();
             s.spawn(move || {
                 for i in i * step..(i + 1) * step {
-                    tx.send((arena.push(root, i), i)).unwrap();
+                    tx.send((arena.push(root, i).index(), i)).unwrap();
                 }
                 drop(tx);
             });
@@ -104,7 +137,7 @@ fn mt_read_write() {
 
         s.spawn(|| {
             for (node, value) in rx {
-                assert_eq!(node.value, value);
+                assert_eq!(arena[node].value, value);
             }
         });
     });
@@ -141,20 +174,18 @@ fn tree_macro() {
     assert_eq!(root.value, "root");
 
     let names = ["one", "two", "three", "four", "five"];
-    for (child, name) in root.children(&arena).zip(names.into_iter().rev()) {
+    for (child, name) in root.children().zip(names.into_iter().rev()) {
         assert_eq!(name, child.value);
     }
 
-    assert_eq!(root2.child(), Some(one.index()));
+    assert_ptr_eq!(root2.child(), Some(one));
     assert_eq!(root2.value, "root2");
     assert_eq!(one.value, "one");
 
-    for (child, name) in one.children(&arena).zip(names[1..].into_iter().rev()) {
+    for (child, name) in one.children().zip(names[1..].into_iter().rev()) {
         assert_eq!(*name, child.value);
     }
 }
-
-// TODO: create a mixed-access test
 
 #[test]
 fn iter() {
@@ -164,17 +195,12 @@ fn iter() {
     let b = arena.push(root, 1);
     let a = arena.push(root, 0);
 
-    arena.push(c, 5);
-    arena.push(b, 4);
-    arena.push(a, 3);
-
-    let mut i = 0;
+    arena.push(c, 3);
     let n = [a, b, c];
 
-    for child in root.children(&arena) {
+    for (i, child) in root.children().enumerate() {
         assert_eq!(child.value, i);
-        assert_eq!(n[i].index(), child.index());
-        i += 1;
+        assert_ptr_eq!(n[i], child);
     }
 }
 
@@ -229,7 +255,7 @@ fn deeply_nested() {
     for i in 0..indices.len() {
         assert_eq!(arena[indices[i]].value, i);
         assert_eq!(nodes[i].value, i);
-        assert_eq!(nodes[i].index(), arena[indices[i]].index());
+        assert_ptr_eq!(&nodes[i], &arena[indices[i]]);
     }
 }
 

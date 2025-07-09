@@ -1,9 +1,12 @@
 //! The nodes within an arena
 
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::sync::Arc;
+use std::sync::atomic::AtomicPtr;
 
-use crate::{Arena, AtomicIndex, Index};
+use crate::{Arena, Index};
+use std::sync::atomic::Ordering::AcqRel;
+use std::sync::atomic::Ordering::Acquire;
 
 // NOTE: moving to pointers sets off miri, resulting in stacked-borrow related errors
 
@@ -11,13 +14,13 @@ use crate::{Arena, AtomicIndex, Index};
 #[derive(Debug)]
 pub struct Node<T> {
     /// This node's index, added for convenience
-    pub(crate) index: Index,
+    index: Index,
     /// This nodes's parent
-    pub(crate) parent: Option<Index>,
+    parent: *mut Self,
     /// This nodes's last added child
-    pub(crate) child: AtomicIndex,
+    child: AtomicPtr<Self>,
     /// The node after this one
-    pub(crate) next: Option<Index>,
+    next: *mut Self,
     /// The node's data
     pub value: T,
 }
@@ -28,12 +31,12 @@ impl<T> Node<T> {
     /// # Safety
     ///
     /// The given `parent` should be located in the arena this node is to put in.
-    pub(crate) const unsafe fn new(index: Index, parent: Option<Index>, value: T) -> Self {
+    pub(crate) unsafe fn new(index: Index, parent: Option<&Self>, value: T) -> Self {
         Self {
             index,
-            parent,
-            child: AtomicIndex::none(),
-            next: None,
+            parent: parent.map_or(ptr::null(), ptr::from_ref) as *mut _,
+            child: AtomicPtr::new(ptr::null_mut()),
+            next: ptr::null_mut(),
             value,
         }
     }
@@ -46,99 +49,95 @@ impl<T> Node<T> {
     /// Get this node's parent
     ///
     /// If [`None`] this node is a root
-    #[expect(clippy::missing_const_for_fn)]
-    pub fn parent(&self) -> Option<Index> {
-        self.parent
+    pub fn parent(&self) -> Option<&Self> {
+        // SAFETY: Node.parent is always correct
+        unsafe { self.parent.as_ref() }
     }
 
     /// Get this node's latest child
     ///
     /// If [`None`] this node is a leaf
-    pub fn child(&self) -> Option<Index> {
-        self.child.get()
+    pub fn child(&self) -> Option<&Self> {
+        // SAFETY: Node.child is always correct
+        unsafe { self.child.load(Acquire).as_ref() }
     }
 
     /// Get this node's next sibling
-    #[expect(clippy::missing_const_for_fn)]
-    pub fn next(&self) -> Option<Index> {
-        self.next
+    pub fn next(&self) -> Option<&Self> {
+        // SAFETY: Node.next is always correct
+        unsafe { self.next.as_ref() }
+    }
+
+    /// Add a child to this node
+    ///
+    /// # Safety
+    ///
+    /// The given `node` must belong to the same arena as this one. The ptr to
+    /// the `node` must be valid.
+    pub(crate) unsafe fn add_child(&self, node: *mut Node<T>) {
+        let mut prev = self.child.load(Acquire);
+        loop {
+            unsafe { (*node).next = prev };
+
+            match self
+                .child
+                .compare_exchange_weak(prev, node, AcqRel, Acquire)
+            {
+                Err(next_prev) => prev = next_prev,
+                Ok(_) => break,
+            }
+        }
     }
 
     /// Iterate over the ancestors of this node
     ///
     /// Iterator starts from this node's parent
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if this `node` isn't held within this `arena`
-    pub fn ancestors<'a>(&'a self, arena: &'a Arena<T>) -> Ancestors<'a, T> {
-        assert!(arena.contains(self), "this node does not belong to arena");
+    pub fn ancestors(&self) -> Ancestors<'_, T> {
         Ancestors {
             curr: self.parent(),
-            arena,
         }
     }
 
     /// Iterate over the children of this node
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if this `node` isn't held within this `arena`
-    ///
-    pub fn children<'a>(&'a self, arena: &'a Arena<T>) -> Next<'a, T> {
-        assert!(arena.contains(self), "this node does not belong to arena");
-        Next {
-            curr: self.child(),
-            arena,
-        }
+    pub fn children(&self) -> Next<'_, T> {
+        Next { curr: self.child() }
     }
 
     /// Iterate over the next(previously added) nodes
     ///
     /// Skips this node
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if this `node` isn't held within this `arena`
-    ///
-    pub fn iter_next<'a>(&'a self, arena: &'a Arena<T>) -> Next<'a, T> {
-        assert!(arena.contains(self), "this node does not belong to arena");
-        Next {
-            curr: self.next(),
-            arena,
-        }
+    pub fn iter_next(&self) -> Next<'_, T> {
+        Next { curr: self.next() }
     }
 }
 
 /// Iterates over nodes using [`Node::next`]
+#[derive(Debug, Clone)]
 pub struct Next<'a, T> {
-    curr: Option<Index>,
-    arena: &'a Arena<T>,
+    curr: Option<&'a Node<T>>,
 }
 
 impl<'a, T> Iterator for Next<'a, T> {
     type Item = &'a Node<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // SAFETY: these node indices are always valid
-        let node = unsafe { self.arena.get_unchecked(self.curr.take()?) };
+        let node = self.curr.take()?;
         self.curr = node.next();
         Some(node)
     }
 }
 
 /// Iterates over nodes using [`Node::parent`]
+#[derive(Debug, Clone)]
 pub struct Ancestors<'a, T> {
-    curr: Option<Index>,
-    arena: &'a Arena<T>,
+    curr: Option<&'a Node<T>>,
 }
 
 impl<'a, T> Iterator for Ancestors<'a, T> {
     type Item = &'a Node<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // SAFETY: these node indices are always valid
-        let node = unsafe { self.arena.get_unchecked(self.curr.take()?) };
+        let node = self.curr.take()?;
         self.curr = node.parent();
         Some(node)
     }

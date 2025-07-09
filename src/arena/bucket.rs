@@ -94,21 +94,10 @@ impl<T> Bucket<T> {
     /// This bucket must be correctly allocated
     pub unsafe fn try_dealloc(&mut self, bucket: usize) {
         if let Some(entries) = self.entries.get_mut() {
+            let len = Location::capacity(bucket);
             // SAFETY: entry soundness upheld by caller
-            unsafe { Self::dealloc(entries.as_ptr(), Location::capacity(bucket)) };
+            drop(unsafe { Box::from_raw(slice::from_raw_parts_mut(entries.as_ptr(), len)) });
         }
-    }
-
-    /// Deallocate a bucket of the specified capacity.
-    ///
-    /// # Safety
-    ///
-    /// The safety requirements of `slice::from_raw_parts_mut` and
-    /// `Box::from_raw`. The pointer must be a valid, owned pointer
-    /// to an array of entries of the provided length.
-    unsafe fn dealloc(entries: *mut T, len: usize) {
-        // SAFETY: entry & len soundness upheld by caller
-        drop(unsafe { Box::from_raw(slice::from_raw_parts_mut(entries, len)) });
     }
 
     /// Reserve space in this bucket if it is uninit

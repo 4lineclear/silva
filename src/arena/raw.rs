@@ -101,7 +101,7 @@ impl<T> Arena<T> {
         let node = unsafe {
             self.bucket_at(loc)
                 .acquire(loc)
-                .write(Node::new(index, parent.map(Node::index), value), parent)
+                .write(Node::new(index, parent, value), parent)
         };
         self.count.fetch_add(1, Relaxed);
 

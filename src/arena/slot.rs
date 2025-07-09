@@ -48,9 +48,10 @@ impl<T> Slot<T> {
         self.state.store(State::Middle as u8, Release);
 
         // SAFETY: upheld by caller
-        let node = unsafe { self.write_raw(node) };
+        unsafe { (*self.slot.get()).write(node) };
         if let Some(parent) = parent {
-            parent.child.add_child(node);
+            // SAFETY: slot is init above
+            unsafe { parent.add_child(UnsafeCell::raw_get(&self.slot) as *mut _) };
         }
 
         self.state.store(State::Active as u8, Release);
@@ -59,16 +60,6 @@ impl<T> Slot<T> {
         // violation of stacked borrow rules. This circumvents the error
         // but might still be UB?
         unsafe { self.get_unchecked() }
-    }
-
-    /// write node to slot
-    ///
-    /// # Safety
-    ///
-    /// The slot must be uninitialized
-    unsafe fn write_raw(&self, node: Node<T>) -> &mut Node<T> {
-        // SAFETY: upheld by caller
-        unsafe { (*self.slot.get()).write(node) }
     }
 
     fn acquire(&self) -> bool {
