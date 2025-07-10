@@ -1,20 +1,8 @@
-rl := "\"-Zsanitizer=address\
- -Zsanitizer=cfi\
- -Zsanitizer=dataflow\
- -Zsanitizer=hwaddress\
- -Zsanitizer=leak\
- -Zsanitizer=memory\
- -Zsanitizer=memtag\
- -Zsanitizer=shadow-call-stack\
- -Zsanitizer=thread\""
-
 test *ARGS:
-    RUST_FLAGS={{rl}} \
-        cargo test {{ARGS}}
+    cargo +nightly test {{ARGS}}
 
 miri *ARGS:
-    MIRIFLAGS="-Zmiri-disable-stacked-borrows" \
-        cargo +nightly miri test {{ARGS}}
+    cargo +nightly miri test {{ARGS}}
 
 bench *ARGS:
     cargo bench {{ARGS}}

@@ -8,19 +8,17 @@ use crate::{Arena, Index};
 use std::sync::atomic::Ordering::AcqRel;
 use std::sync::atomic::Ordering::Acquire;
 
-// NOTE: moving to pointers sets off miri, resulting in stacked-borrow related errors
-
 /// A node within an arena
 #[derive(Debug)]
 pub struct Node<T> {
     /// This node's index, added for convenience
     index: Index,
     /// This nodes's parent
-    parent: *mut Self,
+    parent: *const Self,
     /// This nodes's last added child
     child: AtomicPtr<Self>,
     /// The node after this one
-    next: *mut Self,
+    next: *const Self,
     /// The node's data
     pub value: T,
 }
@@ -34,7 +32,7 @@ impl<T> Node<T> {
     pub(crate) unsafe fn new(index: Index, parent: Option<&Self>, value: T) -> Self {
         Self {
             index,
-            parent: parent.map_or(ptr::null(), ptr::from_ref) as *mut _,
+            parent: parent.map_or_else(ptr::null, ptr::from_ref),
             child: AtomicPtr::new(ptr::null_mut()),
             next: ptr::null_mut(),
             value,
@@ -49,8 +47,9 @@ impl<T> Node<T> {
     /// Get this node's parent
     ///
     /// If [`None`] this node is a root
+    #[expect(clippy::missing_const_for_fn)]
     pub fn parent(&self) -> Option<&Self> {
-        // SAFETY: Node.parent is always correct
+        // SAFETY: Node.parent is always sound
         unsafe { self.parent.as_ref() }
     }
 
@@ -58,13 +57,14 @@ impl<T> Node<T> {
     ///
     /// If [`None`] this node is a leaf
     pub fn child(&self) -> Option<&Self> {
-        // SAFETY: Node.child is always correct
+        // SAFETY: Node.child is always sound
         unsafe { self.child.load(Acquire).as_ref() }
     }
 
     /// Get this node's next sibling
+    #[expect(clippy::missing_const_for_fn)]
     pub fn next(&self) -> Option<&Self> {
-        // SAFETY: Node.next is always correct
+        // SAFETY: Node.next is always sound
         unsafe { self.next.as_ref() }
     }
 
@@ -74,14 +74,18 @@ impl<T> Node<T> {
     ///
     /// The given `node` must belong to the same arena as this one. The ptr to
     /// the `node` must be valid.
-    pub(crate) unsafe fn add_child(&self, node: *mut Node<T>) {
+    pub(crate) unsafe fn add_child(&self, child: *mut Self) {
+        // SAFETY: upheld by caller
+        debug_assert!(unsafe { ptr::eq((*child).parent, self) });
+
         let mut prev = self.child.load(Acquire);
         loop {
-            unsafe { (*node).next = prev };
+            // SAFETY: upheld by caller
+            unsafe { (*child).next = prev };
 
             match self
                 .child
-                .compare_exchange_weak(prev, node, AcqRel, Acquire)
+                .compare_exchange_weak(prev, child, AcqRel, Acquire)
             {
                 Err(next_prev) => prev = next_prev,
                 Ok(_) => break,
@@ -151,6 +155,7 @@ pub struct Handle<T> {
     arena: Arc<Arena<T>>,
 }
 
+// SAFETY: mirrors Arc
 unsafe impl<T: Send + Sync> Send for Handle<T> {}
 unsafe impl<T: Send + Sync> Sync for Handle<T> {}
 

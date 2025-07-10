@@ -70,36 +70,29 @@ impl<T> Arena<T> {
         self.raw.get(index)
     }
 
-    /// Get the node at `index` without checking
-    ///
-    /// # Safety
-    ///
-    /// The bucket and slot at `index` must be initialized.
-    /// This can safely be done as long as [`Index`] is known to come from
-    /// this exact arena.
-    #[expect(dead_code)]
-    pub(crate) unsafe fn get_unchecked(&self, index: Index) -> &Node<T> {
-        unsafe { self.raw.get_unchecked(index) }
-    }
-
     /// Get a handle for the node of the given [`Index`]
-    pub fn get_handle(self: &Arc<Self>, index: Index) -> Option<Handle<T>> {
+    pub fn get_handle(self: &Arc<Self>, index: impl Into<Index>) -> Option<Handle<T>> {
         // SAFETY: node is obtained from correct arena
-        Some(unsafe { Handle::new(self.raw.get(index)?, self) })
+        Some(unsafe { Handle::new(self.raw.get(index.into())?, self) })
     }
 
     /// Add a new node
-    pub fn push<'a>(&'a self, parent: impl AsParent<'a, T>, value: T) -> &'a Node<T> {
+    pub fn push(&self, parent: impl AsParent<T>, value: T) -> &Node<T> {
         self.raw.push_with(parent.get(self), |_| value)
     }
 
     /// Add a new node using the given function
-    pub fn push_with<'a>(
-        &'a self,
-        parent: impl AsParent<'a, T>,
-        f: impl FnOnce(Index) -> T,
-    ) -> &'a Node<T> {
+    pub fn push_with(&self, parent: impl AsParent<T>, f: impl FnOnce(Index) -> T) -> &Node<T> {
         self.raw.push_with(parent.get(self), f)
+    }
+
+    /// Add new nodes using the given iterator
+    pub fn push_all(
+        &self,
+        parent: impl AsParent<T>,
+        values: impl IntoIterator<Item = T, IntoIter: ExactSizeIterator>,
+    ) -> impl ExactSizeIterator<Item = &Node<T>> {
+        self.raw.push_all(parent.get(self), values.into_iter())
     }
 
     /// Get a handle to an index

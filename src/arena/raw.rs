@@ -19,8 +19,6 @@ pub const BUCKETS: usize = SLOTS - 1 - ZERO_BUCKET;
 /// The inclusive max index(slot) able to be stored
 pub const MAX_INDEX: usize = isize::MAX as usize - SLOTS;
 
-// NOTE: can make drop much faster if we use the Arena's properties.
-
 pub struct Arena<T> {
     buckets: [Bucket<Slot<T>>; BUCKETS],
     index: AtomicUsize,
@@ -28,18 +26,19 @@ pub struct Arena<T> {
 }
 
 #[allow(clippy::non_send_fields_in_send_ty)]
-unsafe impl<T: Send + Sync> Send for Arena<T> {}
+unsafe impl<T: Send> Send for Arena<T> {}
 unsafe impl<T: Send + Sync> Sync for Arena<T> {}
+
+// NOTE: can make drop much faster if we use the Arena's properties.
 
 impl<T> Drop for Arena<T> {
     fn drop(&mut self) {
-        // let mut count = *self.count.get_mut();
+        debug_assert_eq!(*self.index.get_mut(), *self.count.get_mut());
+
         for (i, bucket) in self.buckets.iter_mut().enumerate() {
-            // SAFETY: buckets are trusted to be allocated correctly
+            // SAFETY: Arena.buckets is sound
             unsafe { bucket.try_dealloc(i) };
-            // count -= Location::capacity(i);
         }
-        // assert_eq!(count, 0);
     }
 }
 
@@ -52,7 +51,7 @@ impl<T> Default for Arena<T> {
 impl<T> Arena<T> {
     #[expect(clippy::declare_interior_mutable_const)]
     const ARENA: Self = Self {
-        buckets: [const { Bucket::new() }; BUCKETS],
+        buckets: [Bucket::EMPTY; BUCKETS],
         index: AtomicUsize::new(0),
         count: AtomicUsize::new(0),
     };
@@ -62,49 +61,66 @@ impl<T> Arena<T> {
         Self::ARENA
     }
 
-    /// Get a node at index without checking
-    ///
-    /// # Safety
-    ///
-    /// The slot and bucket at [`Index`] must be correctly initialized.
-    /// This can be guarenteed if the given [`Index`] came from this exact arena.
-    pub unsafe fn get_unchecked(&self, index: Index) -> &Node<T> {
-        // SAFETY: upheld by caller
-        let loc = Location::new(index);
-        unsafe { self.bucket_at(loc).get_unchecked(loc.entry).get_unchecked() }
-    }
-
     /// Get a node at index
     pub fn get(&self, index: Index) -> Option<&Node<T>> {
-        // SAFETY: slot is checked
+        // SAFETY: using loc.bucket & loc.entry always results in sound indexing
         let loc = Location::new(index);
         unsafe { self.bucket_at(loc).get(loc.entry) }?.get()
     }
 
     /// Returns a unique index for insertion.
     fn next_index(&self) -> Index {
-        let index = self.index.fetch_add(1, Relaxed);
-        if index > MAX_INDEX {
+        if let index @ ..=MAX_INDEX = self.index.fetch_add(1, Relaxed) {
+            // SAFETY: checked above
+            unsafe { Index::new_unchecked(index) }
+        } else {
             self.index.fetch_sub(1, Relaxed);
             panic!("capacity overflow");
         }
-        // SAFETY: checked above
-        unsafe { Index::new_unchecked(index) }
     }
 
     pub fn push_with(&self, parent: Option<&Node<T>>, f: impl FnOnce(Index) -> T) -> &Node<T> {
         let index = self.next_index();
-        let loc = Location::new(index);
-        let value = f(index);
+        // SAFETY: Index is unique
+        unsafe { self.add_node(parent, index, f(index)) }
+    }
 
+    pub fn push_all(
+        &self,
+        parent: Option<&Node<T>>,
+        values: impl ExactSizeIterator<Item = T>,
+    ) -> impl ExactSizeIterator<Item = &Node<T>> {
+        let origin = self
+            .index
+            .fetch_update(Relaxed, Relaxed, |index| {
+                index.checked_add(values.len()).filter(|&n| n <= MAX_INDEX)
+            })
+            .expect("capacity overflow");
+        let len = values.len();
+
+        values.enumerate().map(move |(i, value)| {
+            assert!(i < len, "iterator returned extra value");
+            // SAFETY: index is unique & checked above
+            unsafe { self.add_node(parent, Index::new_unchecked(origin + i), value) }
+        })
+    }
+
+    /// add a new node
+    ///
+    /// # Safety
+    ///
+    /// Index must be unique, `parent` must be from this arena
+    #[inline]
+    unsafe fn add_node(&self, parent: Option<&Node<T>>, index: Index, value: T) -> &Node<T> {
+        let loc = Location::new(index);
         // SAFETY: index is unique
         let node = unsafe {
             self.bucket_at(loc)
                 .acquire(loc)
                 .write(Node::new(index, parent, value), parent)
         };
-        self.count.fetch_add(1, Relaxed);
 
+        self.count.fetch_add(1, Relaxed);
         node
     }
 
@@ -138,7 +154,6 @@ impl<T> Arena<T> {
         }
     }
 
-    // NOTE: change this to use index instead
     pub fn capacity(&self) -> usize {
         let mut total = 0;
         for bucket in 0..BUCKETS {
@@ -158,6 +173,7 @@ impl<T> Arena<T> {
         self.count.load(Relaxed)
     }
 
+    #[inline]
     fn bucket_at(&self, Location { bucket, .. }: Location) -> &Bucket<Slot<T>> {
         // SAFETY: Location.bucket is always within bounds
         unsafe { self.buckets.get_unchecked(bucket) }

@@ -20,8 +20,6 @@ pub use arena::Arena;
 pub use index::{AsParent, Index};
 pub use node::*;
 
-// TODO: move back to mainly using indexes again.
-
 // /// example for calling cargo-asm
 // #[inline(never)]
 // pub fn example() -> Arena<u32> {

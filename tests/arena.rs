@@ -259,5 +259,21 @@ fn deeply_nested() {
     }
 }
 
+#[test]
+fn push_all() {
+    let arena = Arena::new();
+    let root = arena.push(None, 0);
+
+    for (i, node) in arena.push_all(root, [1, 2, 3, 4, 5]).enumerate() {
+        assert_eq!(
+            node.iter_next().map(|n| n.value).collect::<Vec<_>>(),
+            (1..=i).rev().collect::<Vec<_>>()
+        );
+        assert_eq!(node.value, i + 1);
+        assert_ptr_eq!(root, node.parent());
+        assert_ptr_eq!(root.child(), node);
+    }
+}
+
 // taken from arena::raw
 pub const SLOTS: usize = usize::BITS as usize;

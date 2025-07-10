@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering::{Acquire, Release};
 
 use crate::Node;
 
-// NOTE: uninit should be moved to node.value
+// NOTE: could move uninit to node.value
 
 pub struct Slot<T> {
     state: AtomicU8,
@@ -22,7 +22,7 @@ impl<T> Drop for Slot<T> {
 }
 
 impl<T> Slot<T> {
-    /// get node at slot
+    /// get the node if it is init
     pub fn get(&self) -> Option<&Node<T>> {
         // SAFETY: state is checked
         self.acquire().then(|| unsafe { self.get_unchecked() })
@@ -45,20 +45,17 @@ impl<T> Slot<T> {
     /// The slot must be uninitialized, `parent` should be from the arena
     /// this slot belongs to
     pub unsafe fn write(&self, node: Node<T>, parent: Option<&Node<T>>) -> &Node<T> {
-        self.state.store(State::Middle as u8, Release);
-
+        self.state.store(State::Middle as u8, Release); //could be relaxed
         // SAFETY: upheld by caller
         unsafe { (*self.slot.get()).write(node) };
         if let Some(parent) = parent {
-            // SAFETY: slot is init above
-            unsafe { parent.add_child(UnsafeCell::raw_get(&self.slot) as *mut _) };
+            // SAFETY: slot is init above, slot will not be otherwise accessed
+            let node = UnsafeCell::raw_get(&raw const self.slot).cast();
+            unsafe { parent.add_child(node) };
         }
-
         self.state.store(State::Active as u8, Release);
+
         // SAFETY: has been init above
-        // NOTE: returning a mutable node ref here causes miri to read a
-        // violation of stacked borrow rules. This circumvents the error
-        // but might still be UB?
         unsafe { self.get_unchecked() }
     }
 
@@ -74,7 +71,7 @@ impl<T> Slot<T> {
     fn spin(&self) -> bool {
         // maybe should use exponential backoff
         loop {
-            // could use a relaxed ordering here, confirming with
+            // could use a relaxed ordering here, confirming with Acquire
             match self.state() {
                 State::Uninit => break false,
                 State::Middle => std::hint::spin_loop(),
@@ -112,25 +109,3 @@ impl From<u8> for State {
         }
     }
 }
-
-// could use the below function for spinning
-
-// #[inline]
-// pub fn spin(spin: u32) {
-//     const SPIN_LIMIT: u32 = 8;
-//     const MAX_LIMIT: u32 = 1 << SPIN_LIMIT;
-//
-//     match spin {
-//         ..=SPIN_LIMIT => {
-//             for _ in 0..spin.pow(2) {
-//                 std::hint::spin_loop()
-//             }
-//         }
-//         ..=MAX_LIMIT => {
-//             std::thread::yield_now();
-//         }
-//         _ => {
-//             panic!("max spin reached");
-//         }
-//     }
-// }

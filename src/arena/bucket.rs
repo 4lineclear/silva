@@ -9,30 +9,11 @@ pub struct Bucket<T> {
     entries: OnceLock<NonNull<T>>,
 }
 
-unsafe impl<T: Send + Sync> Send for Bucket<T> {}
-unsafe impl<T: Send + Sync> Sync for Bucket<T> {}
-
 impl<T> Bucket<T> {
     #[expect(clippy::declare_interior_mutable_const)]
-    const EMPTY: Self = Self {
+    pub const EMPTY: Self = Self {
         entries: OnceLock::new(),
     };
-
-    /// Create a new, empty bucket
-    pub const fn new() -> Self {
-        Self::EMPTY
-    }
-
-    /// Get an item at `entry` without checking state
-    ///
-    /// # Safety
-    ///
-    /// The given `entry` must be valid for this bucket.
-    /// This bucket must be initialized
-    pub unsafe fn get_unchecked(&self, entry: usize) -> &T {
-        // SAFETY: entry soundness upheld by caller
-        unsafe { self.entries.get().unwrap_unchecked().add(entry).as_ref() }
-    }
 
     /// Get an item at `entry`
     ///
@@ -92,12 +73,14 @@ impl<T> Bucket<T> {
     /// # Safety
     ///
     /// This bucket must be correctly allocated
-    pub unsafe fn try_dealloc(&mut self, bucket: usize) {
-        if let Some(entries) = self.entries.get_mut() {
-            let len = Location::capacity(bucket);
-            // SAFETY: entry soundness upheld by caller
-            drop(unsafe { Box::from_raw(slice::from_raw_parts_mut(entries.as_ptr(), len)) });
-        }
+    pub unsafe fn try_dealloc(&mut self, bucket: usize) -> bool {
+        let Some(entries) = self.entries.get_mut() else {
+            return false;
+        };
+        let len = Location::capacity(bucket);
+        // SAFETY: entry soundness upheld by caller
+        drop(unsafe { Box::from_raw(slice::from_raw_parts_mut(entries.as_ptr(), len)) });
+        true
     }
 
     /// Reserve space in this bucket if it is uninit

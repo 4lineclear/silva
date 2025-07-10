@@ -43,27 +43,30 @@ impl Index {
 /// - [`Option<Index>`]
 /// - [`Index`]
 /// - [`Node<T>`]
-pub trait AsParent<'a, T>: as_parent::Sealed {
+///
+/// Note that using a node from another arena here will cause a panic.
+pub trait AsParent<T>: as_parent::Sealed {
     /// Optionally get an index
-    fn get(self, arena: &'a Arena<T>) -> Option<&'a Node<T>>;
+    fn get(self, arena: &Arena<T>) -> Option<&Node<T>>;
 }
 
-impl<T> AsParent<'_, T> for Index {
+impl<T> AsParent<T> for Index {
     fn get(self, arena: &Arena<T>) -> Option<&Node<T>> {
         Some(&arena[self])
     }
 }
 
-impl<T> AsParent<'_, T> for Option<Index> {
+impl<T> AsParent<T> for Option<Index> {
     fn get(self, arena: &Arena<T>) -> Option<&Node<T>> {
         Some(&arena[self?])
     }
 }
 
-impl<'a, T> AsParent<'a, T> for &'a Node<T> {
-    fn get(self, arena: &'a Arena<T>) -> Option<&'a Node<T>> {
-        assert!(arena.contains(self));
-        Some(&arena[self.index()])
+impl<T> AsParent<T> for &Node<T> {
+    fn get(self, arena: &Arena<T>) -> Option<&Node<T>> {
+        let node = &arena[self.index()];
+        assert!(std::ptr::eq(self, node), "invalid node used with arena");
+        Some(node)
     }
 }
 
