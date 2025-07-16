@@ -44,14 +44,12 @@ impl<T> Slot<T> {
     ///
     /// The slot must be uninitialized, `parent` should be from the arena
     /// this slot belongs to
-    pub unsafe fn write(&self, node: Node<T>, parent: Option<&Node<T>>) -> &Node<T> {
+    pub unsafe fn write(&self, node: Node<T>, parent: Option<&crate::Node<T>>) -> &Node<T> {
         self.state.store(State::Middle as u8, Release); //could be relaxed
         // SAFETY: upheld by caller
         unsafe { (*self.slot.get()).write(node) };
         if let Some(parent) = parent {
-            // SAFETY: slot is init above, slot will not be otherwise accessed
-            let node = UnsafeCell::raw_get(&raw const self.slot).cast();
-            unsafe { parent.add_child(node) };
+            unsafe { parent.add_child(UnsafeCell::raw_get(&raw const self.slot).cast()) };
         }
         self.state.store(State::Active as u8, Release);
 

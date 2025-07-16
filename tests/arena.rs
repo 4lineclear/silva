@@ -42,7 +42,7 @@ fn simple() {
     let root = arena.push(None, "root");
 
     let a = arena.push(root, "one");
-    let b = arena.handle(arena.push(root, "two"));
+    let b = arena.push(root, "two").handle(&arena);
     let c = arena.push(root, "three").index();
 
     assert_eq!(a.value, "one");

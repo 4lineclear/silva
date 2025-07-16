@@ -8,9 +8,7 @@
 //! [slotmap-boxcar]: https://github.com/SabrinaJewson/boxcar.rs
 //! [sharded-slab]: https://github.com/hawkw/sharded-slab
 
-use crate::{AsParent, Handle, Index, Node};
-
-use std::sync::Arc;
+use crate::{AsParent, Index, Node};
 
 // NOTE: should move bucket & slot to be submodules of raw
 
@@ -70,12 +68,6 @@ impl<T> Arena<T> {
         self.raw.get(index)
     }
 
-    /// Get a handle for the node of the given [`Index`]
-    pub fn get_handle(self: &Arc<Self>, index: impl Into<Index>) -> Option<Handle<T>> {
-        // SAFETY: node is obtained from correct arena
-        Some(unsafe { Handle::new(self.raw.get(index.into())?, self) })
-    }
-
     /// Add a new node
     pub fn push(&self, parent: impl AsParent<T>, value: T) -> &Node<T> {
         self.raw.push_with(parent.get(self), |_| value)
@@ -93,16 +85,6 @@ impl<T> Arena<T> {
         values: impl IntoIterator<Item = T, IntoIter: ExactSizeIterator>,
     ) -> impl ExactSizeIterator<Item = &Node<T>> {
         self.raw.push_all(parent.get(self), values.into_iter())
-    }
-
-    /// Get a handle to an index
-    ///
-    /// # Panics
-    ///
-    /// Panics if the index does not exist within this arena
-    pub fn handle(self: &Arc<Self>, index: impl Into<Index>) -> Handle<T> {
-        // SAFETY: node is obtained from correct arena
-        unsafe { Handle::new(&self[index.into()], self) }
     }
 
     /// returns `true` if the given node belongs to this arena

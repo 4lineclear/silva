@@ -42,15 +42,9 @@ impl<T> Drop for Arena<T> {
     }
 }
 
-impl<T> Default for Arena<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<T> Arena<T> {
     #[expect(clippy::declare_interior_mutable_const)]
-    const ARENA: Self = Self {
+    const EMPTY: Self = Self {
         buckets: [Bucket::EMPTY; BUCKETS],
         index: AtomicUsize::new(0),
         count: AtomicUsize::new(0),
@@ -58,7 +52,19 @@ impl<T> Arena<T> {
 
     /// Construct a new, empty, arena
     pub const fn new() -> Self {
-        Self::ARENA
+        Self::EMPTY
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        // SAFETY: capacity is bounded to MIN_INDEX
+        let loc = unsafe { Location::new_unchecked(capacity.min(MAX_INDEX)) };
+
+        let mut arena = Self::new();
+        for (i, bucket) in arena.buckets[..=loc.bucket].iter_mut().enumerate() {
+            // SAFETY: bucket is uninit, capacity is based on i, which is correct
+            unsafe { bucket.overwrite(Location::capacity(i)) };
+        }
+        arena
     }
 
     /// Get a node at index
@@ -124,18 +130,6 @@ impl<T> Arena<T> {
         node
     }
 
-    pub fn with_capacity(capacity: usize) -> Self {
-        // SAFETY: capacity is bounded to MIN_INDEX
-        let loc = unsafe { Location::new_unchecked(capacity.min(MAX_INDEX)) };
-
-        let mut arena = Self::new();
-        for (i, bucket) in arena.buckets[..=loc.bucket].iter_mut().enumerate() {
-            // SAFETY: bucket is uninit, capacity is based on i, which is correct
-            unsafe { bucket.overwrite(Location::capacity(i)) };
-        }
-        arena
-    }
-
     pub fn reserve(&self, additional: usize) {
         let index = self
             .count
@@ -173,6 +167,9 @@ impl<T> Arena<T> {
         self.count.load(Relaxed)
     }
 
+    /// Get the bucket at the given `Location`
+    ///
+    /// This is safe since `Location.bucket` is always within bounds
     #[inline]
     fn bucket_at(&self, Location { bucket, .. }: Location) -> &Bucket<Slot<T>> {
         // SAFETY: Location.bucket is always within bounds

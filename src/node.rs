@@ -1,5 +1,6 @@
 //! The nodes within an arena
 
+use std::fmt::Debug;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 use std::sync::atomic::AtomicPtr;
@@ -23,20 +24,47 @@ pub struct Node<T> {
     pub value: T,
 }
 
+const fn map_ref<T>(v: Option<&T>) -> *const T {
+    if let Some(v) = v {
+        ptr::from_ref(v)
+    } else {
+        ptr::null()
+    }
+}
+
 impl<T> Node<T> {
     /// create a new node
     ///
     /// # Safety
     ///
     /// The given `parent` should be located in the arena this node is to put in.
-    pub(crate) unsafe fn new(index: Index, parent: Option<&Self>, value: T) -> Self {
+    pub(crate) const unsafe fn new(index: Index, parent: Option<&Self>, value: T) -> Self {
         Self {
             index,
-            parent: parent.map_or_else(ptr::null, ptr::from_ref),
+            parent: map_ref(parent),
             child: AtomicPtr::new(ptr::null_mut()),
             next: ptr::null_mut(),
             value,
         }
+    }
+
+    /// turns this node into a handle using the given arena
+    ///
+    /// # Panics
+    ///
+    /// panics if this `node` is not from the given `arena`
+    pub fn handle(&self, arena: &Arc<crate::Arena<T>>) -> Handle<T> {
+        if arena.contains(self) {
+            // SAFETY: node is confirmed to be in the arena
+            unsafe { Handle::new(self, arena) }
+        } else {
+            panic!("this node does not belong to the given arena")
+        }
+    }
+
+    /// A convenient wrapper for debugging a node
+    pub const fn debug(&self) -> DebugNode<T> {
+        DebugNode(self)
     }
 
     /// Get this node's index
@@ -116,9 +144,15 @@ impl<T> Node<T> {
 }
 
 /// Iterates over nodes using [`Node::next`]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Next<'a, T> {
     curr: Option<&'a Node<T>>,
+}
+
+impl<T> Clone for Next<'_, T> {
+    fn clone(&self) -> Self {
+        Self { curr: self.curr }
+    }
 }
 
 impl<'a, T> Iterator for Next<'a, T> {
@@ -132,9 +166,15 @@ impl<'a, T> Iterator for Next<'a, T> {
 }
 
 /// Iterates over nodes using [`Node::parent`]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Ancestors<'a, T> {
     curr: Option<&'a Node<T>>,
+}
+
+impl<T> Clone for Ancestors<'_, T> {
+    fn clone(&self) -> Self {
+        Self { curr: self.curr }
+    }
 }
 
 impl<'a, T> Iterator for Ancestors<'a, T> {
@@ -159,6 +199,15 @@ pub struct Handle<T> {
 unsafe impl<T: Send + Sync> Send for Handle<T> {}
 unsafe impl<T: Send + Sync> Sync for Handle<T> {}
 
+impl<T> Clone for Handle<T> {
+    fn clone(&self) -> Self {
+        Self {
+            node: self.node,
+            arena: self.arena.clone(),
+        }
+    }
+}
+
 impl<T> Handle<T> {
     /// create a new handle
     ///
@@ -166,6 +215,10 @@ impl<T> Handle<T> {
     ///
     /// The given node should be obtained from the given [`Arena`]
     pub(crate) unsafe fn new(node: &Node<T>, arena: &Arc<Arena<T>>) -> Self {
+        debug_assert!(
+            arena.contains(node),
+            "given node does not belong to this arena"
+        );
         Self {
             node: NonNull::from(node),
             arena: arena.clone(),
@@ -178,12 +231,37 @@ impl<T> Handle<T> {
     }
 }
 
-impl<T: std::ops::Deref> std::ops::Deref for Handle<T> {
+impl<T> std::ops::Deref for Handle<T> {
     type Target = Node<T>;
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: when correctly created(according to Handle::new)
         // this should always be valid
         unsafe { self.node.as_ref() }
+    }
+}
+
+/// A recursively printing wrapper over a node
+pub struct DebugNode<'a, T>(pub &'a Node<T>);
+
+impl<T: Debug> Debug for DebugNode<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self(node) = self;
+
+        f.debug_struct("Node")
+            .field("index", &node.index)
+            .field("value", &node.value)
+            .field("children", &DebugChildren(node.children()))
+            .finish()
+    }
+}
+
+struct DebugChildren<'a, T>(Next<'a, T>);
+
+impl<T: Debug> Debug for DebugChildren<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.clone().map(DebugNode))
+            .finish()
     }
 }
