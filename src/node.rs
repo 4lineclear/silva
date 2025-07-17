@@ -1,16 +1,15 @@
 //! The nodes within an arena
 
-use std::fmt::Debug;
+use std::fmt;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 use std::sync::atomic::AtomicPtr;
-
-use crate::{Arena, Index};
 use std::sync::atomic::Ordering::AcqRel;
 use std::sync::atomic::Ordering::Acquire;
 
+use crate::{Arena, Index};
+
 /// A node within an arena
-#[derive(Debug)]
 pub struct Node<T> {
     /// This node's index, added for convenience
     index: Index,
@@ -22,6 +21,18 @@ pub struct Node<T> {
     next: *const Self,
     /// The node's data
     pub value: T,
+}
+
+impl<T: fmt::Debug> fmt::Debug for Node<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Node")
+            .field("index", &self.index)
+            .field("parent", &self.parent().map(Node::index))
+            .field("child", &self.child().map(Node::index))
+            .field("next", &self.next().map(Node::index))
+            .field("value", &self.value)
+            .finish()
+    }
 }
 
 const fn map_ref<T>(v: Option<&T>) -> *const T {
@@ -195,6 +206,12 @@ pub struct Handle<T> {
     arena: Arc<Arena<T>>,
 }
 
+impl<T: fmt::Debug> fmt::Debug for Handle<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.node().fmt(f)
+    }
+}
+
 // SAFETY: mirrors Arc
 unsafe impl<T: Send + Sync> Send for Handle<T> {}
 unsafe impl<T: Send + Sync> Sync for Handle<T> {}
@@ -229,23 +246,28 @@ impl<T> Handle<T> {
     pub const fn arena(&self) -> &Arc<Arena<T>> {
         &self.arena
     }
-}
 
-impl<T> std::ops::Deref for Handle<T> {
-    type Target = Node<T>;
-
-    fn deref(&self) -> &Self::Target {
+    /// Get this handle's node
+    pub const fn node(&self) -> &Node<T> {
         // SAFETY: when correctly created(according to Handle::new)
         // this should always be valid
         unsafe { self.node.as_ref() }
     }
 }
 
+impl<T> std::ops::Deref for Handle<T> {
+    type Target = Node<T>;
+
+    fn deref(&self) -> &Self::Target {
+        self.node()
+    }
+}
+
 /// A recursively printing wrapper over a node
 pub struct DebugNode<'a, T>(pub &'a Node<T>);
 
-impl<T: Debug> Debug for DebugNode<'_, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T: fmt::Debug> fmt::Debug for DebugNode<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self(node) = self;
 
         f.debug_struct("Node")
@@ -258,8 +280,8 @@ impl<T: Debug> Debug for DebugNode<'_, T> {
 
 struct DebugChildren<'a, T>(Next<'a, T>);
 
-impl<T: Debug> Debug for DebugChildren<'_, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T: fmt::Debug> fmt::Debug for DebugChildren<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list()
             .entries(self.0.clone().map(DebugNode))
             .finish()

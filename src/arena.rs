@@ -19,8 +19,6 @@ mod slot;
 // export just for Index
 pub use raw::MAX_INDEX;
 
-// TODO: create way to allocate many siblings at once
-
 /// The arena where [`Node`]s are stored
 pub struct Arena<T> {
     raw: raw::Arena<T>,
@@ -104,3 +102,47 @@ impl<T> Arena<T> {
         self.raw.capacity()
     }
 }
+
+// struct IterNodes<'a, T> {
+//     pos: usize,
+//     arena: &'a Arena<T>,
+// }
+//
+// impl<'a, T> IterNodes<'a, T> {
+//     fn new(arena: &'a Arena<T>) -> Self {
+//         let pos = 0;
+//         Self { pos, arena }
+//     }
+// }
+//
+// struct MaybeNode<'a, T>(Option<&'a Node<T>>);
+//
+// impl<'a, T: fmt::Debug> fmt::Debug for MaybeNode<'a, T> {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         if let Some(node) = self.0 {
+//             node.fmt(f)
+//         } else {
+//             f.write_str("null")
+//         }
+//     }
+// }
+//
+// impl<'a, T> Iterator for IterNodes<'a, T> {
+//     type Item = MaybeNode<'a, T>;
+//
+//     fn next(&mut self) -> Option<Self::Item> {
+//         if self.pos >= self.arena.count() {
+//             return None;
+//         }
+//
+//         let node = self.arena.get(unsafe { Index::new_unchecked(self.pos) });
+//         self.pos += 1;
+//         Some(MaybeNode(node))
+//     }
+// }
+//
+// impl<T: fmt::Debug> fmt::Debug for Arena<T> {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         f.debug_list().entries(IterNodes::new(self)).finish()
+//     }
+// }
